@@ -1,171 +1,772 @@
-# AI Cost Optimization Middleware
+# BERT-Based Token Importance and Mathematical Token Detection
 
-Production-style MVP for a deterministic middleware layer between a company application and LLM providers, with Gemini Flash as the default live target and OpenAI as an optional adapter. It accepts OpenAI-style chat requests, detects the enterprise prompt type, chooses a safe optimization strategy, protects risky prompt regions, compiles repeated RAG/support context, routes requests, estimates cost, caches repeated requests, logs traces, and provides a validation dashboard.
+## Overview
 
-## Why Companies Need It
+This project analyzes a prompt using the **BERT Base Uncased** model and produces three outputs for every token:
 
-LLM costs often rise because applications repeatedly send overlapping RAG chunks, long system prompts, duplicated policy text, chat history, agent traces, and support or compliance boilerplate. This middleware reduces that waste while preserving code, JSON, math, dates, IDs, money, URLs, emails, and exact quoted text.
+1. **Token Text**
+2. **Mathematical Label**
 
-## Architecture
+   * `1` = token identified as mathematical
+   * `0` = token identified as non-mathematical
+3. **Attention-Based Importance Score**
 
-Company App -> AI Cost Optimization Middleware -> Gemini Flash or OpenAI
+   * Higher values indicate that more tokens in the sequence attend to that token.
 
-The optimizer is deterministic. It does not use another LLM to blindly rewrite prompts. Optional local transformer packages may be used only for semantic validation, embeddings, entity detection, and safety checks.
+The purpose of this script is to identify mathematically significant tokens while measuring how much attention they receive from the rest of the prompt.
 
-The product goal is not universal English summarization. The goal is to reduce LLM spend safely across enterprise prompt patterns: customer support RAG, repeated policies, repeated instructions, duplicated retrieved context, chat history, tool traces, and repeated system templates.
+---
 
-## Quickstart
+# Model
 
-```bash
-cd ai-cost-optimization-middleware
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-$env:GEMINI_API_KEY="your key"
-uvicorn app.main:app --reload
+The project uses:
+
+```python
+bert-base-uncased
 ```
 
+from Hugging Face Transformers.
 
+BERT (Bidirectional Encoder Representations from Transformers) is a transformer encoder model trained on large text corpora using:
 
-## Dry-Run Vs Live
+* Masked Language Modeling (MLM)
+* Next Sentence Prediction (NSP)
 
-Dry-run validates middleware mechanics only. It does not prove real model output quality. Live mode uses Gemini Flash when `GEMINI_API_KEY` is configured, or OpenAI when `OPENAI_API_KEY` is configured and the OpenAI provider is selected. If a key is missing or a provider call fails, the API falls back to dry-run and labels that clearly.
+This implementation loads:
 
-## Gemini Setup
-
-Set `GEMINI_API_KEY` in your shell or deployment environment. Do not commit API keys. The default model is `gemini-1.5-flash`; override with `GEMINI_MODEL`.
-
-## OpenAI Setup
-
-Set `OPENAI_API_KEY` in your environment. The default model is `gpt-4o-mini`; override with `OPENAI_MODEL` or the dashboard model override.
-
-## Local Transformer Validation
-
-Set `ENABLE_LOCAL_TRANSFORMERS=1` to attempt local `sentence-transformers/all-MiniLM-L6-v2` and spaCy loading when those packages/models are installed. If unavailable, traces explicitly report deterministic lexical/rule fallback. No external API is called for validation.
-
-## LLMLingua2 Second Layer
-
-The middleware includes a second-stage `llm_lingua_backend` after the cheap layer. It treats the cheap-layer output as the safety baseline, then uses the true `llmlingua` package with `use_llmlingua2=True` for learned prompt-token compression when enabled.
-
-Default behavior is deterministic and local unless `ENABLE_LLM_LINGUA=1` is set. Adjacent low-information filler such as repeated `please`/`kindly` can be compacted without loading the LLMLingua2 model.
-
-To enable true local LLMLingua2 compression, install requirements and set:
-
-```bash
-ENABLE_LLM_LINGUA=1
-LLM_LINGUA_BACKEND=llmlingua2
-LLM_LINGUA2_MODEL=microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank
-LLM_LINGUA2_DEVICE=cpu
+```python
+BertTokenizer
+BertModel
 ```
 
-Gemini remains the final downstream LLM provider, not the preferred compression engine. A legacy `LLM_LINGUA_BACKEND=gemini` mode exists for experimentation, but production flow should be `cheap_layer -> LLMLingua2 -> validator -> Gemini`.
+and extracts attention weights from the final transformer layer.
 
-The LLMLingua2 candidate is accepted only if it is shorter and preserves protected placeholders, protected facts, state signatures, event signatures, risk/negation markers, entities, and semantic similarity. If any check fails, the layer falls back to the cheap-layer output and records the rejection reason in traces.
+---
 
-## Enterprise Optimization Architecture
+# Imported Libraries
 
-The middleware runs:
+## re
 
-raw messages -> prompt type detector -> strategy planner -> protected placeholder extraction -> specialized optimizer -> safety/quality gate -> provider/cache/router -> analytics trace.
-
-Prompt types include `customer_support`, `rag_context`, `legal_compliance`, `policy_instruction`, `chat_history`, `agent_tool_trace`, `product_docs`, `finance_report`, and `general_prompt`.
-
-Strategies include exact cache, semantic cache, RAG dedupe, customer support policy dedupe, repeated instruction cleanup, conservative semantic compression, routing, and no-change when optimization risk or overhead is not worth it.
-
-Every accepted and rejected action is traceable with prompt type, chosen strategy, score, tokens saved, risk flags, and reason.
-
-## Cheap Layer
-
-The cheap layer is the first safety-first compression pass for obvious redundancy. It handles exact sentence duplicates, repeated instruction text, safe repeated list frames, number-word equivalents such as `eighty-three percent` vs `83%`, and conservative semantic duplicate candidates only when protected fact keys match.
-
-It is not final deletion authority for risky language. Its validation gate preserves protected facts, entity identities, state signatures, negation/risk markers, and surface quality. If it cannot prove safety, it fails closed and leaves the prompt for the next layer.
-
-Run its focused stress harness:
-
-```bash
-python -m app.cheap_layer_stress --cases 500 --seed 19
+```python
+import re
 ```
 
-The audit trace includes original tokens, compressed tokens, surface changes, semantic removals, rejected removals, validation gate results, missing protected facts, missing state signatures, and final action.
+Python's built-in regular expression engine.
 
-## Customer Support RAG Optimizer
+Used for:
 
-For support prompts assembled from policies, handbooks, escalation guides, knowledge base articles, ticket fields, reminders, and tasks, the middleware:
+* Compiling the mathematical token detector
+* Matching tokens against mathematical patterns
 
-- collapses repeated verification requirements into one canonical rule
-- collapses repeated Finance-approval requirements into one canonical rule
-- collapses repeated reminders such as "Do not promise approval"
-- preserves ticket fields, IDs, emails, SKUs, dates, and refund amounts exactly
-- preserves the final task
-- rejects output if protected facts disappear or tokens do not decrease
+Example:
 
-This is where the middleware should show meaningful savings on real enterprise workloads, typically much more than on tiny toy prompts.
-
-## API Examples
-
-```bash
-curl http://127.0.0.1:8000/health
+```python
+MATH_REGEX.match(token)
 ```
 
-```bash
-curl -X POST http://127.0.0.1:8000/optimize -H "Content-Type: application/json" -d "{\"messages\":[{\"role\":\"user\",\"content\":\"Refunds over $500 require Finance approval. Refunds over $500 require Finance approval.\"}],\"compression_level\":\"safe\",\"provider\":\"gemini\",\"mode\":\"dry-run\"}"
+---
+
+## transformers
+
+```python
+from transformers import BertTokenizer, BertModel
 ```
 
-```bash
-curl -X POST http://127.0.0.1:8000/v1/chat/completions -H "Content-Type: application/json" -d "{\"model\":\"gemini-1.5-flash\",\"messages\":[{\"role\":\"user\",\"content\":\"Please please summarize this.\"}],\"mode\":\"live\"}"
+### BertTokenizer
+
+Converts raw text into BERT tokens.
+
+Example:
+
+```python
+TOKENIZER(prompt)
 ```
 
-## RAG Context Compiler
+Output:
 
-The RAG compiler detects chunk headers such as `Retrieved context chunk 1:`, `Source A:`, `Chunk 3:`, and `Policy excerpt:`. It dedupes exact and near-duplicate chunks, removes repeated sentences inside chunks, preserves unique facts, avoids contradictory merges, and uses compact references like `[dup: chunk 1]`.
+```text
+"Calculus is fun"
+```
 
-## Semantic Cache
+becomes
 
-The middleware supports exact response caching today and exposes conservative semantic-cache decision traces. Semantic reuse is rejected for time-sensitive prompts and whenever protected facts such as IDs, numbers, dates, or money differ. The MVP does not broadly reuse semantic cache entries unless a safe embedding index is added.
+```text
+[CLS]
+calculus
+is
+fun
+[SEP]
+```
 
-## Cost And Routing
+and is converted into token IDs.
 
-The cost model estimates provider input/output cost before and after compression, prompt-compression savings, cache savings, routing savings, and total estimated savings. Rule-based routing selects cheaper or stronger models based on prompt length, code/math, regulated domains, strict JSON, reasoning signals, or user override.
+---
 
-## Validation Tools
+### BertModel
 
-- `POST /benchmark` runs short, enterprise workload, enterprise RAG, safety, and adversarial suites.
-- `POST /evaluate-quality` compares original and optimized prompts with deterministic structural metrics.
-- `POST /robustness-test` runs adversarial protection cases.
-- `POST /company-pilot-sim` runs benchmark, quality evaluation, robustness, analytics, and readiness scoring.
-- `POST /demo-report` generates `reports/demo_report.html`.
+Loads the pretrained BERT encoder.
 
-## Production Readiness Score
+Example:
 
-The score considers savings, estimated cost savings, quality failures, grammar failures, semantic failures, protected-region failures, robustness failures, cache hit rate, rejection rate, latency, and live-provider validation. Dry-run cannot score above 85.
+```python
+MODEL(**inputs)
+```
 
-Labels:
+Returns:
 
-- `90-100`: `pilot_ready`
-- `75-89`: `staging_only`
-- `50-74`: `prototype_only`
-- below `50`: `unsafe`
+* Hidden states
+* Attention matrices
+* Other transformer outputs
 
-## Rollout Plan
+This implementation enables:
 
-1. Dry-run: validate mechanics and protected-region behavior.
-2. Shadow mode: compare optimized and original requests without serving optimized responses.
-3. Staging: use real Gemini Flash calls and inspect traces.
-4. Limited traffic: start with safe compression and low-risk workflows.
-5. Production: expand only after live quality metrics and rollback plans are in place.
+```python
+output_attentions=True
+```
 
-## Failure Modes
+to retrieve self-attention weights.
 
-The optimizer rejects compression when tokens do not decrease, protected regions change, sensitive facts disappear, JSON/code/math may be altered, compression is too aggressive, or backend confidence is low.
-The grammar gate also rejects obvious broken output such as orphan verb starts, dangling conjunctions/prepositions, broken punctuation, double spaces, and fragments produced by unsafe span removal.
+---
 
-## What It Does Not Guarantee
+# Model Initialization
 
-Dry-run mode does not prove real model output quality. Heuristic similarity is not a semantic judge. The MVP is conservative by design: it may miss savings rather than corrupt a prompt. KV-cache reuse and a persistent vector index are still roadmap items.
+The tokenizer and model are loaded once:
 
-## Roadmap
+```python
+TOKENIZER = BertTokenizer.from_pretrained(
+    "bert-base-uncased"
+)
 
-- Broader prompt-type-specific optimizers
-- Persistent semantic embedding index
-- KV-cache optimization
-- vLLM/Ollama integration
+MODEL = BertModel.from_pretrained(
+    "bert-base-uncased",
+    attn_implementation="eager"
+)
+```
+
+Advantages:
+
+* Faster execution
+* No repeated model downloads
+* Reduced memory overhead
+
+---
+
+# Mathematical Token Detection
+
+## MATH_REGEX
+
+A large compiled regular expression is used to detect mathematical tokens.
+
+Categories include:
+
+### Numbers
+
+```text
+42
+3.14
+-8
+1e5
+```
+
+### Fractions
+
+```text
+3/4
+5/8
+```
+
+### Operators
+
+```text
++
+-
+*
+/
+^
+=
+<
+>
+```
+
+and symbols such as:
+
+```text
+≤ ≥ ≠ ± × ÷
+```
+
+### Delimiters
+
+```text
+(
+)
+[
+]
+{
+}
+```
+
+### Greek Symbols
+
+```text
+π
+θ
+λ
+Ω
+```
+
+### Set Theory Symbols
+
+```text
+∪
+∩
+⊆
+∅
+```
+
+### Logic Symbols
+
+```text
+∀
+∃
+⇒
+⇔
+∈
+```
+
+### Mathematical Functions
+
+```text
+sin
+cos
+tan
+log
+ln
+sqrt
+```
+
+### Calculus Terms
+
+```text
+derivative
+integral
+gradient
+limit
+```
+
+### Linear Algebra Terms
+
+```text
+matrix
+vector
+tensor
+eigenvalue
+rank
+```
+
+### Statistics Terms
+
+```text
+mean
+variance
+distribution
+```
+
+### Mathematical Variables
+
+```text
+x
+y
+z
+i
+j
+v
+n
+```
+
+The regex is compiled only once:
+
+```python
+re.compile(...)
+```
+
+for performance.
+
+---
+
+# Functions
+
+---
+
+## get_outputs(prompt)
+
+### Purpose
+
+Runs BERT and returns the full model output.
+
+### Input
+
+```python
+prompt: str
+```
+
+### Process
+
+1. Tokenize prompt
+2. Run BERT
+3. Enable attention extraction
+
+```python
+outputs = MODEL(
+    **inputs,
+    output_attentions=True
+)
+```
+
+### Returns
+
+```python
+BaseModelOutputWithPoolingAndCrossAttentions
+```
+
+containing:
+
+* hidden states
+* pooled output
+* attention tensors
+
+---
+
+## attention_weights(prompt)
+
+### Purpose
+
+Extracts a token-to-token attention matrix.
+
+### Process
+
+#### Step 1
+
+Retrieve all attention layers:
+
+```python
+attentions = outputs.attentions
+```
+
+Shape:
+
+```text
+[num_layers,
+ batch_size,
+ num_heads,
+ seq_len,
+ seq_len]
+```
+
+For BERT Base:
+
+```text
+12 layers
+12 heads
+```
+
+---
+
+#### Step 2
+
+Select final layer:
+
+```python
+last_layer = attentions[-1]
+```
+
+Shape:
+
+```text
+[1, 12, seq_len, seq_len]
+```
+
+---
+
+#### Step 3
+
+Average across heads:
+
+```python
+attention_matrix = last_layer.mean(dim=1)
+```
+
+Result:
+
+```text
+[seq_len, seq_len]
+```
+
+---
+
+#### Step 4
+
+Remove special tokens:
+
+```python
+[CLS]
+[SEP]
+```
+
+using:
+
+```python
+attention_matrix[1:-1]
+```
+
+---
+
+### Returns
+
+```python
+list[list[float]]
+```
+
+A square attention matrix.
+
+---
+
+## label_prompt(tokens)
+
+### Purpose
+
+Assign mathematical labels.
+
+### Logic
+
+Each token is checked against:
+
+```python
+MATH_REGEX
+```
+
+If matched:
+
+```python
+label = 1
+```
+
+otherwise:
+
+```python
+label = 0
+```
+
+---
+
+### Example
+
+Input:
+
+```text
+["solve", "x", "+", "5"]
+```
+
+Output:
+
+```text
+tokens = ["solve","x","+","5"]
+labels = [0,1,1,1]
+```
+
+---
+
+## math_separate(prompt)
+
+### Purpose
+
+Tokenizes the prompt using the same tokenizer used by BERT.
+
+### Process
+
+```python
+TOKENIZER(prompt)
+```
+
+Convert IDs back into readable tokens:
+
+```python
+convert_ids_to_tokens(...)
+```
+
+Remove:
+
+```text
+[CLS]
+[SEP]
+```
+
+Then call:
+
+```python
+label_prompt(tokens)
+```
+
+---
+
+### Returns
+
+```python
+tokens
+labels
+```
+
+---
+
+## token_importance(attention_matrix)
+
+### Purpose
+
+Compute an attention-based importance score for each token.
+
+### Formula
+
+For token j:
+
+```text
+Importance(j)
+=
+Σ Attention(i → j)
+```
+
+for all tokens:
+
+```text
+i ≠ j
+```
+
+In other words:
+
+Each token receives attention from every other token.
+
+The total received attention becomes its importance score.
+
+---
+
+### Algorithm
+
+```python
+for j in range(n):
+    for i in range(n):
+        if i != j:
+            importance[j] += attention_matrix[i][j]
+```
+
+---
+
+### Interpretation
+
+Large score:
+
+```text
+Many tokens attend to this token.
+```
+
+Small score:
+
+```text
+Few tokens attend to this token.
+```
+
+---
+
+## analyze_prompt(prompt)
+
+### Purpose
+
+Main analysis pipeline.
+
+### Process
+
+```python
+tokens, labels = math_separate(prompt)
+
+attention_matrix = attention_weights(prompt)
+
+scores = token_importance(
+    attention_matrix
+)
+```
+
+Verifies:
+
+```python
+len(tokens)
+==
+len(labels)
+==
+len(scores)
+```
+
+---
+
+### Returns
+
+```python
+tokens
+labels
+scores
+```
+
+---
+
+# Scoring System
+
+The score for a token is:
+
+```text
+Score(token_j)
+=
+Σ Attention(i → j)
+```
+
+where:
+
+```text
+i ≠ j
+```
+
+Interpretation:
+
+| Score  | Meaning                                             |
+| ------ | --------------------------------------------------- |
+| High   | Many other tokens depend on or reference this token |
+| Medium | Some contextual relevance                           |
+| Low    | Little influence on surrounding tokens              |
+
+The score is not a probability.
+
+The score is not normalized.
+
+The score is simply the accumulated attention received from other tokens in the final BERT layer after averaging all attention heads.
+
+---
+
+# Example Prompt
+
+```text
+Gemini, please help me solve the following math equation:
+y=x^2+5x-50.
+
+Explain why the sky appears blue during the day.
+
+Write a short summary of the Industrial Revolution.
+
+What are the main causes of climate change?
+
+Tell me a story about a robot exploring Mars.
+
+What is the result of (7 + 4) * (9 - 2)?
+
+Solve the system:
+x + y = 10,
+2x - y = 5
+
+Find the roots of x^3 - 6x^2 + 11x - 6.
+
+Find the area of a circle with radius 8.
+
+Calculate the circumference of a circle using
+C = 2πr.
+
+Find the derivative of sin(x).
+
+Evaluate the integral ∫ x^2 dx.
+
+Compute the eigenvalues of
+A = [[2,1],[1,2]].
+
+Find P(A|B).
+
+Determine whether the graph is bipartite.
+
+∀x∈R, x^2≥0
+
+Solve √(x+1)
+```
+
+---
+
+# Example Output
+
+```text
+Token               Score                    Label
+
+solve               0.824100                 0
+x                   1.621900                 1
++                   1.882700                 1
+5                   1.203400                 1
+```
+
+Where:
+
+* Token = BERT token
+* Score = attention importance
+* Label = mathematical classification
+
+---
+
+# Current Pipeline
+
+```text
+Prompt
+   │
+   ▼
+BERT Tokenizer
+   │
+   ▼
+Tokens
+   │
+   ├──────────────► Regex Math Detector
+   │                      │
+   │                      ▼
+   │                   Labels
+   │
+   ▼
+BERT Encoder
+   │
+   ▼
+Final Attention Layer
+   │
+   ▼
+Average Heads
+   │
+   ▼
+Attention Matrix
+   │
+   ▼
+Token Importance Scores
+   │
+   ▼
+(tokens, labels, scores)
+```
+
+---
+
+# Output Format
+
+```python
+tokens, labels, scores = analyze_prompt(prompt)
+```
+
+Returns:
+
+```python
+(
+    tokens,
+    labels,
+    scores
+)
+```
+
+where:
+
+```python
+tokens: List[str]
+labels: List[int]
+scores: List[float]
+```
